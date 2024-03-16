@@ -1,0 +1,280 @@
+import os
+import glob
+import sys
+from os.path import exists, join, basename, splitext
+from os import listdir
+import nibabel as nib
+import numpy as np 
+from nibabel import load, Nifti1Image, save
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+import tensorflow as tf
+from tensorflow.keras import optimizers
+import keras
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Flatten
+from keras.layers import Conv3D, MaxPooling3D
+from keras.utils import to_categorical
+import time
+from keras.preprocessing.image import ImageDataGenerator
+from skimage.util import view_as_windows
+from skimage.transform import resize
+import matplotlib.pyplot as plt
+
+
+
+# Go to the FastSurfer directory
+os.chdir('C:/Users/SPIRIT/Documents/Master/fastsurfer')
+
+# specify the parent folder path
+data_folder = r'C:\Users\SPIRIT\Desktop\percentages\100_100\FEMALE'
+
+# list all subfolders of the parent folder
+subfolders = [f.path for f in os.scandir(data_folder) if f.is_dir()]
+print(subfolders)
+
+# Create a dictionary to map string labels to integer values
+label_mapping = {
+    'CN': 0,
+    'MCI': 1,
+    'AD': 2,
+}
+
+# List to hold the data
+data = []
+labels = []
+
+# Lists to hold images before and after resizing for visualization
+original_images = []
+resized_images = []
+
+# Define the target size for resizing
+target_size = (64, 64, 64)
+
+# Loop through the subfolders
+for subfolder in ['AD', 'MCI', 'CN']:
+    # Extract the label from the subfolder name
+    label = '_'.join(subfolder.split('_')[:])
+    print(label)
+    
+    subfolder_path = os.path.join(data_folder, subfolder)
+    for filename in os.listdir(subfolder_path):
+        file_path = os.path.join(subfolder_path, filename)
+        # Load the data from the file
+        nii_file = nib.load(file_path)
+        # Get the image data
+        image_data = nii_file.get_fdata()
+        
+        # Ensure the image data has the correct dimensions
+        image_data = resize(image_data, target_size, anti_aliasing=True)
+        
+        # Append the original and resized images for visualization
+        original_images.append(image_data)
+        resized_images.append(image_data)
+        
+        # Add the data and label to the lists
+        data.append(image_data)
+        labels.append(label_mapping[label])
+
+# Convert the lists to numpy arrays
+data = np.array(data)
+labels = np.array(labels)
+
+# Convert class labels to categorical data
+num_classes = len(label_mapping)
+labels = to_categorical(labels, num_classes)
+
+datagen = ImageDataGenerator(
+    rotation_range=10,  # Random rotation by 10 degrees
+    width_shift_range=0.1,  # Random horizontal shift by 0.1
+    height_shift_range=0.1,  # Random vertical shift by 0.1
+    shear_range=0.2,  # Random shearing by 0.2
+    zoom_range=0.2,  # Random zoom between 0.8 and 1.2
+    horizontal_flip=True,  # Randomly flip images horizontally
+    vertical_flip=True  # Randomly flip images vertically
+)
+
+# Split the data into training and testing sets
+x_train, x_test, y_train, y_test = train_test_split(data, labels, test_size=0.2, random_state=42)
+
+
+# Fit the data generator on the training data
+datagen.fit(x_train)
+
+
+# Model architecture
+model = Sequential()
+model.add(Conv3D(128, kernel_size=(3, 3, 3), activation='relu', input_shape=(64, 64, 64, 1)))
+model.add(Conv3D(128, kernel_size=(3, 3, 3), activation='relu'))
+model.add(MaxPooling3D(pool_size=(2, 2, 2)))
+model.add(Conv3D(64, kernel_size=(3, 3, 3), activation='relu'))
+model.add(Conv3D(64, kernel_size=(3, 3, 3), activation='relu'))
+model.add(MaxPooling3D(pool_size=(2, 2, 2)))
+model.add(Conv3D(32, kernel_size=(3, 3, 3), activation='relu'))
+model.add(Conv3D(32, kernel_size=(3, 3, 3), activation='relu'))
+model.add(MaxPooling3D(pool_size=(2, 2, 2)))
+model.add(Dropout(0.25))
+model.add(Flatten())
+model.add(Dense(256, activation='relu'))
+model.add(Dropout(0.5))
+model.add(Dense(num_classes, activation='softmax'))
+
+# Explicitly create accuracy metric
+accuracy_metric = keras.metrics.CategoricalAccuracy(name='my_accuracy')
+
+# Compile the model using the created accuracy metric
+adam = optimizers.Adam(learning_rate=0.001)
+model.compile(loss=keras.losses.categorical_crossentropy, optimizer=adam, metrics=['acc'])
+
+
+# Start the timer
+start_time = time.time()
+
+# Train the model using augmented data
+batch_size = 32
+epochs = 50
+
+
+# Train the model using augmented data
+history = model.fit(datagen.flow(x_train, y_train, batch_size=batch_size),
+                    steps_per_epoch=len(x_train) // batch_size,
+                    epochs=epochs,
+                    verbose=1,
+                    validation_data=(x_test, y_test))
+
+"""
+history = model.fit(x_train, y_train,
+                    batch_size=batch_size,
+                    epochs=epochs,
+                    verbose=1,
+                    validation_data=(x_test, y_test))
+""" 
+
+
+# Calculate the duration
+duration = time.time() - start_time
+print('Training duration:', duration, 'seconds')
+
+# Evaluate the model
+score = model.evaluate(x_test, y_test, verbose=0)
+print('Test loss:', score[0])
+print('Test accuracy:', score[1])
+
+"""
+# Plot training & validation accuracy values
+plt.plot(history.history['acc'])
+plt.plot(history.history['val_acc'])
+plt.title('Model accuracy')
+plt.ylabel('Accuracy')
+plt.xlabel('Epoch')
+plt.legend(['Train', 'Test'], loc='upper left')
+plt.show()
+
+# Plot training & validation loss values
+plt.plot(history.history['loss'])
+plt.plot(history.history['val_loss'])
+plt.title('Model loss')
+plt.ylabel('Loss')
+plt.xlabel('Epoch')
+plt.legend(['Train', 'Test'], loc='upper left')
+plt.show()
+""" 
+
+# Make predictions on the test set
+y_pred = model.predict(x_test)
+
+# Convert predictions to labels
+y_pred_labels = np.argmax(y_pred, axis=1)
+y_test_labels = np.argmax(y_test, axis=1)
+
+
+# Function to calculate Dice Score
+def dice_score(y_true, y_pred):
+    intersection = np.sum(y_true * y_pred)
+    union = np.sum(y_true) + np.sum(y_pred)
+    return 2.0 * intersection / union
+
+# Function to calculate Specificity for multi-class classification
+def specificity_score(y_true, y_pred):
+    specificity_per_class = []
+
+    # Iterate over each class
+    for i in range(num_classes):
+        # Create a binary mask for the current class
+        true_mask = (y_true == i)
+        pred_mask = (y_pred == i)
+
+        # Calculate true negatives and false positives for the current class
+        tn_class = np.sum((true_mask) & (~pred_mask))
+        fp_class = np.sum((~true_mask) & pred_mask)
+
+        # Calculate Specificity for the current class
+        specificity_class = tn_class / (tn_class + fp_class) if (tn_class + fp_class) > 0 else 0.0
+
+        # Append the specificity value for the current class
+        specificity_per_class.append(specificity_class)
+
+    # Calculate the average specificity
+    average_specificity = np.mean(specificity_per_class)
+
+    return average_specificity
+
+
+
+#Evaluate the model
+conf_mat = confusion_matrix(y_test_labels, y_pred_labels)
+global_accuracy = accuracy_score(y_test_labels, y_pred_labels)
+precision = precision_score(y_test_labels, y_pred_labels, average='weighted')
+recall = recall_score(y_test_labels, y_pred_labels, average='weighted')
+f1 = f1_score(y_test_labels, y_pred_labels, average='weighted')
+dice = dice_score(y_test_labels, y_pred_labels)
+specificity = specificity_score(y_test_labels, y_pred_labels)
+roc_auc = roc_auc_score(y_test, y_pred, multi_class='ovr')
+
+
+
+# Print the metrics
+print("Global Accuracy:", global_accuracy)
+print("Precision:", precision)
+print("Recall:", recall)
+print("F1 Score:", f1)
+print("Dice Score:", dice)
+print("Average Specificity:", specificity)
+print("ROC AUC Score:", roc_auc)
+
+
+"""
+from keras.utils import plot_model
+import matplotlib.pyplot as plt
+import os
+
+# Save the model architecture diagram to a file with an explicit path
+plot_model(model, to_file=os.path.join('Bureau', 'model.png'), show_shapes=True, show_layer_names=True)
+
+# Display the saved image
+img_path = os.path.join('Bureau', 'model.png')
+img = plt.imread(img_path)
+plt.figure(figsize=(10, 10))
+plt.imshow(img)
+plt.axis('off')
+plt.show()
+"""
+
+
+"""
+# Visualize the model architecture
+from keras.utils.vis_utils import plot_model
+
+# Save the model architecture diagram to a file
+plot_model(model, to_file='model.png', show_shapes=True, show_layer_names=True)
+"""
+"""
+from keras.utils.vis_utils import plot_model
+import matplotlib.pyplot as plt
+
+plot_model(model, show_shapes=True, show_layer_names=True)
+plt.show()
+
+# Save the model architecture diagram to a file
+#plot_model(model, to_file='model.png', show_shapes=True, show_layer_names=True)
+"""
